@@ -368,7 +368,7 @@ object Main extends App:
   
   // Это просто цепочка описаний "сделай это, потом то" 
   // без реального выполнения.
-  val program: IO[Unit] =
+  val program = //IO[Unit]
     for
       _ <- ScenarioStep.showBanner
       hour <- ScenarioStep.getCurrentHour
