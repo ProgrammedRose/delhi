@@ -34,7 +34,7 @@ object Display:
       finalPrice match
         case Right(price) if price < basePrice =>
           // Скидка активна - показываем обе цены.
-          f"  %%-10s  ${formatCoins(basePrice)}%s → ${formatCoins(price)}%s  !!!".format(name, "", "")
+          f"  %%-10s  ${formatCoins(basePrice)}%s - ${formatCoins(price)}%s  !!!".format(name, "", "")
         case Right(price) =>
           f"  %%-10s  ${formatCoins(price)}%s".format(name, "")
         case Left(_) =>
@@ -166,7 +166,7 @@ object ScenarioStep:
 
 // -----------------------------------------------------------------------------
 // 3. APPSTATE — мост между чистым State и IO-миром
-// -----------------------------------------------------------------------------
+// -------------------------
 // State - это чистая монада, она не хранит состояние сама по себе.
 // Каждый вызов run(s) возвращает новое состояние, а его нужно где-то хранить.
 //
@@ -301,34 +301,39 @@ object ScenarioLoop:
   //   как новое IO-значение, не выполняя его сразу."
   //
   // Я ему, можно сказать, поверил, потому здесь и используется рекурсивный цикл.
-
   def loop(appState: AppState, cfg: VendingConfig): IO[Unit] =
+
+    val commands: Map[String, IO[Unit]] = Map(
+      "buy"    -> handleBuy(appState, cfg),
+      "insert" -> handleInsert(appState, cfg),
+      "cancel" -> handleCancel(appState, cfg),
+      "refill" -> handleRefill(appState, cfg),
+      "status" -> (for
+        s <- appState.get
+        _ <- ScenarioStep.showState(s)
+      yield ()),
+      "menu"   -> (for
+        hour <- ScenarioStep.getCurrentHour
+        _    <- ScenarioStep.showMenu(cfg, hour)
+      yield ()),
+      "quit"   -> (for
+        s <- appState.get
+        _ <- IO.putStrLn("\n  Завершение работы.")
+        _ <- ScenarioStep.showState(s)
+      yield ())
+    )
+
     for
       cmd <- ScenarioStep.prompt("Команда")
-      _ <- cmd match
-        case "buy" => handleBuy(appState, cfg)
-        case "insert" => handleInsert(appState, cfg)
-        case "cancel" => handleCancel(appState, cfg)
-        case "refill" => handleRefill(appState, cfg)
-        case "status" =>
-          // Читаем состояние через IO и печатаем его.
-          for
-            s <- appState.get
-            _ <- ScenarioStep.showState(s)
-          yield ()
-        case "menu" =>
-          for
-            hour <- ScenarioStep.getCurrentHour
-            _ <- ScenarioStep.showMenu(cfg, hour)
-          yield ()
-        case "quit" =>
-          // Перед выходом показываем финальное состояние и лог.
-          for
-            s <- appState.get
-            _ <- IO.putStrLn(s"\n  Завершение работы.")
-            _ <- ScenarioStep.showState(s)
-          yield ()
-        case other => handleUnknown(other)
+
+      // commands.get(cmd) возвращает Option[IO[Unit]]:
+      //   Some(action) — команда найдена, action — что выполнить
+      //   None         — неизвестная команда
+      // getOrElse подставляет handleUnknown если команда не найдена.
+      // Итого: никакого match, только поиск по ключу + fallback.
+      action = commands.get(cmd).getOrElse(handleUnknown(cmd))
+
+      _ <- action
 
       // Продолжаем цикл если команда не "quit".
       _ <- if cmd == "quit" then IO.pure(()) else loop(appState, cfg)
