@@ -1,383 +1,324 @@
-
-//   Всё что здесь есть — это ОПИСАНИЕ взаимодействия, а не само взаимодействие.
-//   Каждая функция возвращает IO[A].
-//   Реальные грязные эффекты происходят только в одном месте -
-//   в самом конце, когда вызывается unsafeRun().
+// =============================================================================
+// Scenario.scala - интерактивный сценарий торгового автомата (Tagless Final)
+// =============================================================================
+// Файл содержит:
+//   1. Display        - чистые функции форматирования (без F, без алгебр)
+//   2. ScenarioStep   - элементарные шаги через ConsoleAlgebra[F]
+//   3. ScenarioLoop   - главный цикл через все четыре алгебры
+//   4. Main           - единственная точка входа, создаёт IO-интерпретаторы
 //
-//
+// Ключевое отличие от ЛР1:
+//   Ни одного прямого вызова IO.putStrLn / IO.readLine.
+//   Весь ввод-вывод - через ConsoleAlgebra[F].
+//   Вся логика автомата - через MachineAlgebra[F], ConfigAlgebra[F], LogAlgebra[F].
+//   ScenarioStep и ScenarioLoop параметризованы по F[_]: Monad.
+//   Конкретный F = IO подставляется только в Main.
+// =============================================================================
 
 
-// ------------------------
-// 1. DISPLAY — форматирование состояния для вывода
-// ------------------------
-// Чистые функции: принимают данные, возвращают строки.
-// Никакого IO здесь нету - только данные в текст.
+// -------------------------------------------
+// 1. DISPLAY - чистые функции форматирования
+// -----------------------------
+// Принимают данные, возвращают строки. Никакого F здесь нет -
+// это не эффекты, а просто трансформация данных в текст.
+// ScenarioStep вызывает эти функции и передаёт результат в console.putStrLn.
 
 object Display:
-  
+
   val separator: String = "─" * 50
 
-
-  // Дублируется из VendingWriter (там приватная) — здесь нужна для вывода состояния.
   def formatCoins(amount: Int): String =
     f"${amount / 100}%d.${amount % 100}%02d руб."
 
-  // renderMenu: отформатировать список товаров с ценами в виде меню.
-  // Принимает список (название, базовая Цена) и текущий час для отображения скидок.
-  // Возвращает многострочную строку - готовую для println.
+  // Меню товаров. Цена со скидкой вычисляется через cfg напрямую -
+  // это чистое вычисление, не требует F.
   def renderMenu(products: List[(String, Int)], hour: Int, cfg: VendingConfig): String =
-    val header = List(separator, "  МЕНЮ АВТОМАТА", separator)
-
-    val rows = products.map { (name, basePrice) =>
-      // Для каждого товара считаем актуальную цену с учётом скидки.
-      val finalPrice = VendingReader.effectivePrice(name, hour).run(cfg)
-      finalPrice match
-        case Right(price) if price < basePrice =>
-          // Скидка активна - показываем обе цены.
-          f"  %%-10s  ${formatCoins(basePrice)}%s - ${formatCoins(price)}%s  !!!".format(name, "", "")
-        case Right(price) =>
-          f"  %%-10s  ${formatCoins(price)}%s".format(name, "")
-        case Left(_) =>
-          f"  %%-10s  цена недоступна".format(name)
+    val rows = products.map { (name, base) =>
+      val final_ = (base * cfg.discountRule(name, hour)).toInt
+      if final_ < base then
+        f"  %%-10s  ${formatCoins(base)}%s - ${formatCoins(final_)}%s  !!!".format(name, "", "")
+      else
+        f"  %%-10s  ${formatCoins(final_)}%s".format(name, "")
     }
-
-    val footer = List(separator)
-    (header ++ rows ++ footer).mkString("\n")
-
-  // renderState: отформатировать полное состояние автомата.
-  // Используется в конце сценария и при команде «статус».
-  def renderState(s: MachineState): String =
-    val stockLines = s.stock.toList.sortBy(_._1).map { (name, count) =>
-      f"  %%-10s  $count%d шт.".format(name)
-    }
-
-    val cashLines = s.cashBox.toList.sortBy(-_._1).map { (denom, count) =>
-      f"  ${formatCoins(denom)}%s  x  $count%d"
-    }
-
-    List(
-      separator,
-      "  СОСТОЯНИЕ АВТОМАТА",
-      separator,
-      s"  Внесено:  ${formatCoins(s.inserted)}",
-      s"  Выручка:  ${formatCoins(s.revenue)}",
-      separator,
-      "  Склад:",
-    )
-      .concat(stockLines)
-      .concat(List(separator, "  Касса:"))
-      .concat(cashLines)
-      .concat(List(separator))
+    (List(separator, "  МЕНЮ АВТОМАТА", separator) ++ rows ++ List(separator))
       .mkString("\n")
 
-  // renderLog: отформатировать накопленный Writer-лог для вывода.
-  // Добавляет заголовок и разделитель - чтобы лог не сливался с остальным выводом.
+  def renderState(s: MachineState): String =
+    val stockLines = s.stock.toList.sortBy(_._1)
+      .map((name, n) => f"  %%-10s  $n%d шт.".format(name))
+    val cashLines = s.cashBox.toList.sortBy(-_._1)
+      .map((d, n) => f"  ${formatCoins(d)}%s  ×  $n%d")
+    (List(separator, "  СОСТОЯНИЕ АВТОМАТА", separator,
+      s"  Внесено:  ${formatCoins(s.inserted)}",
+      s"  Выручка:  ${formatCoins(s.revenue)}",
+      separator, "  Склад:")
+      ++ stockLines
+      ++ List(separator, "  Касса:")
+      ++ cashLines
+      ++ List(separator))
+      .mkString("\n")
+
   def renderLog(log: Vector[String]): String =
     if log.isEmpty then ""
-    else
-      (List(separator, "  ЛОГ ОПЕРАЦИИ") ++ log.toList ++ List(separator))
-        .mkString("\n")
+    else (List(separator, "  ЛОГ ОПЕРАЦИИ") ++ log.toList ++ List(separator))
+      .mkString("\n")
+
+  val banner: String =
+    s"""
+       |$separator
+       |     ТОРГОВЫЙ АВТОМАТ
+       |$separator
+       |  Команды:
+       |    buy      - купить товар
+       |    insert   - внести монету
+       |    cancel   - отменить и вернуть деньги
+       |    refill   - пополнить склад (сервисный режим)
+       |    status   - показать состояние автомата
+       |    menu     - показать меню товаров
+       |    quit     - выйти
+       |$separator""".stripMargin
 
 
-// --------------------------------
+// -------------------------------------
 // 2. SCENARIO STEP
-// --------
-
-//
-// Почему не писать всё в одной большой функции?
-// Маленькие шаги легко тестировать и переиспользовать.
-//
+// -----------------------------------------------------------------------------
+// Все методы принимают console: ConsoleAlgebra[F] и возвращают F[_].
+// Никакого IO внутри - только вызовы методов алгебры.
 
 object ScenarioStep:
 
-  // showBanner: напечатать приветственный экран при запуске.
-  val showBanner: IO[Unit] =
-    IO.putStrLn(
-      s"""
-         |${Display.separator}
-         |     ТОРГОВЫЙ АВТОМАТ 
-         |${Display.separator}
-         |  Команды:
-         |    buy      - купить товар
-         |    insert   - внести монету
-         |    cancel   - отменить и вернуть деньги
-         |    refill   - пополнить склад (сервисный режим)
-         |    status   - показать состояние автомата
-         |    menu     - показать меню товаров
-         |    quit     - выйти
-         |${Display.separator}""".stripMargin
-    )
+  def showBanner[F[_]: Monad](console: ConsoleAlgebra[F]): F[Unit] =
+    console.putStrLn(Display.banner)
 
-  // showMenu: прочитать список товаров через Reader и напечатать меню.
-  // Принимает конфигурацию и текущий час.
-  def showMenu(cfg: VendingConfig, hour: Int): IO[Unit] =
-    // VendingReader.availableProducts — это Reader, запускаем его с cfg.
-    val products = VendingReader.availableProducts.run(cfg)
-    IO.putStrLn(Display.renderMenu(products, hour, cfg))
-
-  // showState: напечатать текущее состояние автомата.
-  def showState(state: MachineState): IO[Unit] =
-    IO.putStrLn(Display.renderState(state))
-
-  // showLog: напечатать Writer-лог если он непустой.
-  def showLog(log: Vector[String]): IO[Unit] =
-    val rendered = Display.renderLog(log)
-    if rendered.isEmpty then IO.pure(())
-    else IO.putStrLn(rendered)
-
-  
-  
-  // prompt: напечатать приглашение и прочитать строку.
-  // Возвращает IO[String]
-  def prompt(msg: String): IO[String] =
+  def showMenu[F[_]: Monad](
+                             cfg:     VendingConfig,
+                             hour:    Int,
+                             config:  ConfigAlgebra[F],
+                             console: ConsoleAlgebra[F]
+                           ): F[Unit] =
     for
-      _ <- IO.putStr(s"\n$msg > ")
-      s <- IO.readLine
+      products <- config.availableProducts
+      _        <- console.putStrLn(Display.renderMenu(products, hour, cfg))
+    yield ()
+
+  def showState[F[_]: Monad](
+                              machine: MachineAlgebra[F],
+                              console: ConsoleAlgebra[F]
+                            ): F[Unit] =
+    for
+      s <- machine.getState
+      _ <- console.putStrLn(Display.renderState(s))
+    yield ()
+
+  def showLog[F[_]: Monad](
+                            logger:  LogAlgebra[F],
+                            console: ConsoleAlgebra[F]
+                          ): F[Unit] =
+    for
+      log <- logger.getLogs
+      _   <- if log.isEmpty then summon[Monad[F]].pure(())
+      else console.putStrLn(Display.renderLog(log))
+      _   <- logger.clearLogs
+    yield ()
+
+  // prompt: напечатать приглашение, прочитать строку, привести к нижнему регистру.
+  def prompt[F[_]: Monad](msg: String, console: ConsoleAlgebra[F]): F[String] =
+    for
+      _ <- console.putStr(s"\n$msg > ")
+      s <- console.readLine
     yield s.trim.toLowerCase
 
-  // promptRaw: то же, но без toLowerCase - для ввода названий товаров.
-  def promptRaw(msg: String): IO[String] =
+  // promptRaw: то же, без toLowerCase - для названий товаров нужно.
+  def promptRaw[F[_]: Monad](msg: String, console: ConsoleAlgebra[F]): F[String] =
     for
-      _ <- IO.putStr(s"\n$msg > ")
-      s <- IO.readLine
+      _ <- console.putStr(s"\n$msg > ")
+      s <- console.readLine
     yield s.trim
 
-  // readInt: прочитать целое число, повторяя запрос при ошибке ввода.
-  // Рекурсия через IO - если ввод некорректен, возвращаем IO который
-  // снова читает строку. Хвостовая рекурсия через IO безопасна:
-  // реальный вызов происходит только при unsafeRun, стека не накапливается.
-  def readInt(msg: String): IO[Int] =
+  // readInt: читать строку до тех пор, пока не введут целое число.
+  def readInt[F[_]: Monad](msg: String, console: ConsoleAlgebra[F]): F[Int] =
     for
-      s <- promptRaw(msg)
+      s <- promptRaw(msg, console)
       result <- s.toIntOption match
-        case Some(n) => IO.pure(n)
+        case Some(n) => summon[Monad[F]].pure(n)
         case None    =>
           for
-            _ <- IO.putStrLn(s"  Ошибка: '$s' - не число. Попробуйте снова.")
-            n <- readInt(msg) // повторяем запрос
+            _ <- console.putStrLn(s"  Ошибка: '$s' - не число. Попробуйте снова.")
+            n <- readInt(msg, console)
           yield n
     yield result
 
-  // getCurrentHour: прочитать текущий час из системных часов.
-  // Завёрнуто в IO — это побочный эффект (обращение к системному времени).
+  // getCurrentHour завёрнут в IO напрямую - системное время доступно
+  // только в IO-интерпретаторе. Вызывается только из Main.
   val getCurrentHour: IO[Int] =
     IO(() => java.time.LocalTime.now().getHour)
 
 
 // -----------------------------------------------------------------------------
-// 3. APPSTATE — мост между чистым State и IO-миром
-// -------------------------
-// State - это чистая монада, она не хранит состояние сама по себе.
-// Каждый вызов run(s) возвращает новое состояние, а его нужно где-то хранить.
-//
-// Поскольку мутации или трансформации являются чем-то страшным и непонятным (и вроде как
-// они запрещены в рамках задания к данной лабораторной) - мы используем
-// обычный var внутри класса, завёрнутый в IO.
-//
-// Это единственное место во всём этом проекте где есть var.
+// 3. SCENARIOLOOP - главный цикл, параметризованный по F
+// -----------------------------------------------------------------------------
+// Принимает все четыре алгебры + конфигурацию.
+// Не знает про IO, State, Reader, Writer - только про F[_]: Monad.
 
-
-class AppState(initial: MachineState):
-
-  // Единственный var в проекте - текущее состояние автомата.
-  // Снаружи к нему нет доступа, только через методы ниже.
-  private var current: MachineState = initial
-
-  // get: прочитать текущее состояние как IO-действие.
-  val get: IO[MachineState] =
-    IO(() => current)
-
-  // runTransition: запустить State-переход и обновить текущее состояние.
-  // Принимает State[MachineState, W[Result[A]]] - переход с логом и результатом.
-  // Возвращает IO[(Result[A], Vector[String])] - результат и лог.
-  //
-  // Это ключевая «точка соединения» между чистым State-миром и IO-миром:
-  //   1. run(current) - запускаем чистый переход со старым состоянием
-  //   2. current = newState - сохраняем новое состояние - тут наша единственная мутация.
-  //   3. writerResult.run - разворачиваем Writer в (result, log)
-  
-  
-  def runTransition[A](transition: State[MachineState, W[Result[A]]]): IO[(Result[A], Vector[String])] =
-    IO(() =>
-      val (writerResult, newState) = transition.run(current)
-      current = newState                          // обновляем состояние
-      val (result, log) = writerResult.run        // разворачиваем Writer
-      (result, log)
-    )
-
-
-// ---------------
-// 4. SCENARIO LOOP
-// ------------
-// Сценарий у нас - это рекурсивный IO-цикл:
-//   показать приглашение, прочитать команду, выполнить, повторить
-//
-// Каждая ветка команды - отдельная функция, возвращающая IO[Unit].
-// Главный цикл loop возвращает IO[Unit].
-//
 object ScenarioLoop:
-  // handleInsert - это сценарий внесения монеты.
-  // Спрашивает номинал, запускает переход insertCoin, печатает лог.
-  def handleInsert(appState: AppState, cfg: VendingConfig): IO[Unit] =
+
+  def handleInsert[F[_]: Monad](
+                                 machine: MachineAlgebra[F],
+                                 logger:  LogAlgebra[F],
+                                 console: ConsoleAlgebra[F]
+                               ): F[Unit] =
     for
-      coin <- ScenarioStep.readInt("Номинал монеты (копейки)")
-      (result, log) <- appState.runTransition(VendingMachine.insertCoin(coin, cfg))
-      _ <- ScenarioStep.showLog(log)
-      _ <- result match
+      coin   <- ScenarioStep.readInt("Номинал монеты (копейки)", console)
+      result <- machine.insertCoin(coin)
+      _      <- result match
         case Right(total) =>
-          IO.putStrLn(s"  Итого внесено: ${Display.formatCoins(total)}")
+          logger.explainInsert(coin, accepted = true, total)
         case Left(err) =>
-          IO.putStrLn(s"  Отказ: $err")
+          logger.explainInsert(coin, accepted = false, 0)
+      _      <- ScenarioStep.showLog(logger, console)
+      _      <- result match
+        case Right(total) =>
+          console.putStrLn(s"  Итого внесено: ${Display.formatCoins(total)}")
+        case Left(err) =>
+          console.putStrLn(s"  Отказ: $err")
     yield ()
 
-  // handleBuy: сценарий покупки товара.
-  // Спрашивает название товара, запускает переход selectProduct, печатает лог.
-  def handleBuy(appState: AppState, cfg: VendingConfig): IO[Unit] =
+  def handleBuy[F[_]: Monad](
+                              machine: MachineAlgebra[F],
+                              config:  ConfigAlgebra[F],
+                              logger:  LogAlgebra[F],
+                              console: ConsoleAlgebra[F],
+                              cfg:     VendingConfig,
+                              hour:    Int
+                            ): F[Unit] =
     for
-      hour <- ScenarioStep.getCurrentHour
-      _ <- ScenarioStep.showMenu(cfg, hour)
-      product <- ScenarioStep.promptRaw("Название товара")
-      (result, log) <- appState.runTransition(
-        VendingMachine.selectProduct(product, hour, cfg)
+      _       <- ScenarioStep.showMenu(cfg, hour, config, console)
+      product <- ScenarioStep.promptRaw("Название товара", console)
+      // Логируем цену до покупки
+      price   <- config.effectivePrice(product, hour)
+      _       <- price match
+        case Right(p) =>
+          config.priceOf(product).flatMap(base =>
+            logger.explainPrice(product, base.getOrElse(p), p, hour)
+          )
+        case Left(_) => summon[Monad[F]].pure(())
+      result  <- machine.selectProduct(product, hour)
+      _       <- logger.explainPurchase(
+        product,
+        0,  // inserted до покупки неизвестен здесь - логируем в интерпретаторе
+        price.getOrElse(0),
+        result
       )
-      _ <- ScenarioStep.showLog(log)
-      _  <- result match
+      _       <- ScenarioStep.showLog(logger, console)
+      _       <- result match
         case Right(change) if change.isEmpty =>
-          IO.putStrLn("  Покупка успешна. Сдача не требуется.")
+          console.putStrLn("  Покупка успешна. Сдача не требуется.")
         case Right(change) =>
-          val coins = change.map(Display.formatCoins).mkString(", ")
-          IO.putStrLn(s"  Покупка успешна. Сдача: $coins")
+          console.putStrLn(
+            s"  Покупка успешна. Сдача: ${change.map(Display.formatCoins).mkString(", ")}"
+          )
         case Left(err) =>
-          IO.putStrLn(s"  Покупка отклонена: $err")
+          console.putStrLn(s"  Покупка отклонена: $err")
     yield ()
 
-  // handleCancel: сценарий отмены - возвращаем внесенные деньги.
-  def handleCancel(appState: AppState, cfg: VendingConfig): IO[Unit] =
+  def handleCancel[F[_]: Monad](
+                                 machine: MachineAlgebra[F],
+                                 logger:  LogAlgebra[F],
+                                 console: ConsoleAlgebra[F]
+                               ): F[Unit] =
     for
-      (result, log) <- appState.runTransition(VendingMachine.cancelPurchase(cfg))
-      _ <- ScenarioStep.showLog(log)
-      _ <- result match
+      result <- machine.cancelPurchase
+      _      <- result match
+        case Right(returned) => logger.explainCancel(returned)
+        case Left(err)       => logger.explainFailure(err)
+      _      <- ScenarioStep.showLog(logger, console)
+      _      <- result match
         case Right(returned) =>
-          IO.putStrLn(s"  Возвращено: ${Display.formatCoins(returned)}")
+          console.putStrLn(s"  Возвращено: ${Display.formatCoins(returned)}")
         case Left(err) =>
-          IO.putStrLn(s"  $err")
+          console.putStrLn(s"  $err")
     yield ()
 
-  // handleRefill: режим пополнения склада.
-  // Спрашивает товар и количество, запускает переход refillProduct.
-
-  def handleRefill(appState: AppState, cfg: VendingConfig): IO[Unit] =
+  def handleRefill[F[_]: Monad](
+                                 machine: MachineAlgebra[F],
+                                 logger:  LogAlgebra[F],
+                                 console: ConsoleAlgebra[F]
+                               ): F[Unit] =
     for
-
-      product<- ScenarioStep.promptRaw("Название товара")
-      amount <- ScenarioStep.readInt("Количество единиц")
-
-      (result, log) <- appState.runTransition(
-        VendingMachine.refillProduct(product, amount, cfg)
-      )
-      _ <- ScenarioStep.showLog(log)
-      _ <- result match
-        case Right(newStock) =>
-          IO.putStrLn(s"  Новый остаток '$product': $newStock шт.")
+      product <- ScenarioStep.promptRaw("Название товара", console)
+      amount  <- ScenarioStep.readInt("Количество единиц", console)
+      result  <- machine.refillProduct(product, amount)
+      _       <- result match
+        case Right(_)  => logger.explainRefill(product, amount)
+        case Left(err) => logger.explainFailure(err)
+      _       <- ScenarioStep.showLog(logger, console)
+      _       <- result match
+        case Right(stock) =>
+          console.putStrLn(s"  Новый остаток '$product': $stock шт.")
         case Left(err) =>
-          IO.putStrLn(s"  Ошибка: $err")
+          console.putStrLn(s"  Ошибка: $err")
     yield ()
 
-  // handleUnknown: неизвестная команда, что-то типо ошибки, но без ошибки
-  // просто сообщаем об этом.
-  def handleUnknown(cmd: String): IO[Unit] =
-    IO.putStrLn(s"  Неизвестная команда: '$cmd'. Введите одну из: buy, insert, cancel, refill, status, menu, quit.")
+  // loop: рекурсивный цикл команд через Map сделали.
+  // Конкретный F подставляется только в Main.
+  def loop[F[_]: Monad](
+                         machine: MachineAlgebra[F],
+                         config:  ConfigAlgebra[F],
+                         logger:  LogAlgebra[F],
+                         console: ConsoleAlgebra[F],
+                         cfg:     VendingConfig,
+                         hour:    Int
+                       ): F[Unit] =
 
-  // loop: основной рекурсивный цикл.
-  //
-  // Что делеам:
-  //   1. Читаем команду.
-  //   2. Выполняем соответствующий обработчик.
-  //   3. Если команда не "quit" - рекурсивно вызываем loop снова.
-  //
-  // Почему рекурсия а не while? Ну... АйЯй сказал, что
-  //   "while — это императивный стиль с изменяемой переменной-флагом.
-  //   Рекурсия через IO — функциональный эквивалент: описываем «что делать дальше»
-  //   как новое IO-значение, не выполняя его сразу."
-  //
-  // Я ему, можно сказать, поверил, потому здесь и используется рекурсивный цикл.
-  def loop(appState: AppState, cfg: VendingConfig): IO[Unit] =
-
-    val commands: Map[String, IO[Unit]] = Map(
-      "buy"    -> handleBuy(appState, cfg),
-      "insert" -> handleInsert(appState, cfg),
-      "cancel" -> handleCancel(appState, cfg),
-      "refill" -> handleRefill(appState, cfg),
-      "status" -> (for
-        s <- appState.get
-        _ <- ScenarioStep.showState(s)
-      yield ()),
-      "menu"   -> (for
-        hour <- ScenarioStep.getCurrentHour
-        _    <- ScenarioStep.showMenu(cfg, hour)
-      yield ()),
+    val commands: Map[String, F[Unit]] = Map(
+      "buy"    -> handleBuy(machine, config, logger, console, cfg, hour),
+      "insert" -> handleInsert(machine, logger, console),
+      "cancel" -> handleCancel(machine, logger, console),
+      "refill" -> handleRefill(machine, logger, console),
+      "status" -> ScenarioStep.showState(machine, console),
+      "menu"   -> ScenarioStep.showMenu(cfg, hour, config, console),
       "quit"   -> (for
-        s <- appState.get
-        _ <- IO.putStrLn("\n  Завершение работы.")
-        _ <- ScenarioStep.showState(s)
+        _ <- console.putStrLn("\n  Завершение работы.")
+        _ <- ScenarioStep.showState(machine, console)
       yield ())
     )
 
     for
-      cmd <- ScenarioStep.prompt("Команда")
-
-      // commands.get(cmd) возвращает Option[IO[Unit]]:
-      //   Some(action) — команда найдена, action — что выполнить
-      //   None         — неизвестная команда
-      // getOrElse подставляет handleUnknown если команда не найдена.
-      // Итого: никакого match, только поиск по ключу + fallback.
-      action = commands.get(cmd).getOrElse(handleUnknown(cmd))
-
-      _ <- action
-
-      // Продолжаем цикл если команда не "quit".
-      _ <- if cmd == "quit" then IO.pure(()) else loop(appState, cfg)
+      cmd <- ScenarioStep.prompt("Команда", console)
+      action  = commands.get(cmd).getOrElse(
+        console.putStrLn(
+          s"  Неизвестная команда: '$cmd'. " +
+            s"Доступные: ${commands.keys.mkString(", ")}."
+        )
+      )
+      _      <- action
+      _      <- if cmd == "quit" then summon[Monad[F]].pure(())
+      else loop(machine, config, logger, console, cfg, hour)
     yield ()
 
 
-// --------------------------------------------------------------------------
-// 5. MAIN
-// --------------------------------------------------------------
-//
-// Структура:
-//   1. Берём конфигурацию из DefaultConfig.
-//   2. Создаём AppState с начальным состоянием MachineState.initial.
-//   3. Собираем программку - баннер, меню, цикл.
-//   4. Вызываем unsafeRun() - вот здесь и происходит грязь.
+
+// 4. MAIN - наша единственная точка входа
+// -----------------------------------------------------------------------------
+// Здесь F будем фиксировать как IO, но можно 
+// будет также сделать другие интерпретаторы и подставить (условный id для тестов)...
+// Создаем четыре IO-интерпретатора и передаём их в ScenarioLoop.loop.
+// unsafeRun вызывается ровно один раз.
 
 object Main extends App:
 
-  // Конфигурация автомата - определена в Domain.scala.
+  val cfg     = DefaultConfig.config
+  val machine = new IOMachineInterpreter(cfg)
+  val config  = new IOConfigInterpreter(cfg)
+  val logger  = new IOLogInterpreter
+  val console = new IOConsoleInterpreter
 
-  val cfg = DefaultConfig.config
-
-  // Изменяемое состояние.
-  val appState = new AppState(MachineState.initial)
-
-  // Собираем полный IO-сценарий:
-  //   showBanner - приветствие
-  //   getCurrentHour - читаем системное время для скидок
-  //   showMenu - показываем меню с ценами
-  //   loop - запускаем интерактивный цикл.
-  //
-  
-  // Это просто цепочка описаний "сделай это, потом то" 
-  // без реального выполнения.
-  val program = //IO[Unit]
+  val program: IO[Unit] =
     for
-      _ <- ScenarioStep.showBanner
+      _    <- ScenarioStep.showBanner(console)
       hour <- ScenarioStep.getCurrentHour
-      _ <- ScenarioStep.showMenu(cfg, hour)
-      _ <- ScenarioLoop.loop(appState, cfg)
+      _    <- ScenarioStep.showMenu(cfg, hour, config, console)
+      _    <- ScenarioLoop.loop(machine, config, logger, console, cfg, hour)
     yield ()
 
-
-  // До этой строки ниже не было напечатано ни одной строки,
-  // не прочитано ни одного символа с клавиатуры.
-  // Все грязное происходит здесь.
   program.unsafeRun()
