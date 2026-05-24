@@ -1,24 +1,4 @@
-// =============================================================================
-// ЛР2: Интерпретаторы — конкретные реализации алгебр для F = IO
-// =============================================================================
-// Каждый интерпретатор реализует одну алгебру для конкретного F.
-// Все четыре используют F = IO — единый эффект для всей программы.
-//
-// IO*Interpreter оборачивает логику в IO(() => ...) там где нужно,
-// либо напрямую запускает State-переходы и Reader-вычисления внутри IO.
-//
-//   IOConfigInterpreter   — ConfigAlgebra[IO]
-//   IOLogInterpreter      — LogAlgebra[IO]
-//   IOMachineInterpreter  — MachineAlgebra[IO]
-//   IOConsoleInterpreter  — ConsoleAlgebra[IO]
-// =============================================================================
 
-
-// -----------------------------------------------------------------------------
-// IOConfigInterpreter — ConfigAlgebra[IO]
-// Конфиг фиксирован в конструкторе.
-// Вся логика — чистые вычисления, завёрнутые в IO.
-// -----------------------------------------------------------------------------
 class IOConfigInterpreter(cfg: VendingConfig) extends ConfigAlgebra[IO]:
 
   def priceOf(product: String): IO[Result[Int]] =
@@ -58,11 +38,9 @@ class IOConfigInterpreter(cfg: VendingConfig) extends ConfigAlgebra[IO]:
     IO(() => cfg.prices.toList.sortBy(_._1))
 
 
-// -----------------------------------------------------------------------------
-// IOLogInterpreter — LogAlgebra[IO]
-// Лог хранится в изменяемом буфере внутри класса, обёрнутом в IO.
-// getLogs / clearLogs позволяют читать и сбрасывать лог между операциями.
-// -----------------------------------------------------------------------------
+
+// IOLogInterpreter - LogAlgebra[IO]
+// Лог у нас хранится в изменяемом буфере внутри класса, что обернут в IO.
 class IOLogInterpreter extends LogAlgebra[IO]:
 
   private var buffer: Vector[String] = Vector.empty
@@ -75,14 +53,14 @@ class IOLogInterpreter extends LogAlgebra[IO]:
   def log(message: String): IO[Unit] = append(message)
 
   def explainInsert(coin: Int, accepted: Boolean, total: Int): IO[Unit] =
-    if accepted then append(s"[МОНЕТА ] +${formatCoins(coin)}. Итого внесено: ${formatCoins(total)}")
-    else append(s"[МОНЕТА ] ${formatCoins(coin)} — номинал не принимается.")
+    if accepted then append(s"[МОНЕТА] +${formatCoins(coin)}. Итого внесено: ${formatCoins(total)}")
+    else append(s"[МОНЕТА] ${formatCoins(coin)} - номинал не принимается.")
 
   def explainPrice(product: String, base: Int, final_ : Int, hour: Int): IO[Unit] =
     if final_ < base then
-      append(s"[ЦЕНА   ] '$product': ${formatCoins(base)} → ${formatCoins(final_)} (скидка, $hour:00)")
+      append(s"[ЦЕНА] '$product': ${formatCoins(base)} - ${formatCoins(final_)} (скидка, $hour:00)")
     else
-      append(s"[ЦЕНА   ] '$product': ${formatCoins(final_)}")
+      append(s"[ЦЕНА] '$product': ${formatCoins(final_)}")
 
   def explainPurchase(
                        product:      String,
@@ -92,32 +70,29 @@ class IOLogInterpreter extends LogAlgebra[IO]:
                      ): IO[Unit] =
     changeResult match
       case Right(coins) if coins.isEmpty =>
-        append(s"[УСПЕХ  ] '$product' куплен за ${formatCoins(price)}. Сдача не требуется.")
+        append(s"[УСПЕХ] '$product' куплен за ${formatCoins(price)}. Сдача не требуется.")
       case Right(coins) =>
         val changeStr = coins.map(formatCoins).mkString(", ")
-        append(s"[УСПЕХ  ] '$product' куплен за ${formatCoins(price)}. Сдача: $changeStr")
+        append(s"[УСПЕХ] '$product' куплен за ${formatCoins(price)}. Сдача: $changeStr")
       case Left(reason) =>
-        append(s"[ОТКАЗ  ] Покупка '$product' невозможна: $reason.")
+        append(s"[ОТКАЗ] Покупка '$product' невозможна: $reason.")
 
   def explainFailure(reason: String): IO[Unit] =
-    append(s"[ОШИБКА ] $reason.")
+    append(s"[ОШИБКА] $reason.")
 
   def explainCancel(returned: Int): IO[Unit] =
-    append(s"[ОТМЕНА ] Возврат: ${formatCoins(returned)}.")
+    append(s"[ОТМЕНА] Возврат: ${formatCoins(returned)}.")
 
   def explainRefill(product: String, amount: Int): IO[Unit] =
-    append(s"[СКЛАД  ] '$product' пополнен на $amount шт.")
+    append(s"[СКЛАД] '$product' пополнен на $amount шт.")
 
   def getLogs: IO[Vector[String]]  = IO(() => buffer)
   def clearLogs: IO[Unit]          = IO(() => buffer = Vector.empty)
 
 
-// -----------------------------------------------------------------------------
-// IOMachineInterpreter — MachineAlgebra[IO]
+// IOMachineInterpreter - MachineAlgebra[IO]
 // Состояние автомата хранится в var внутри класса.
-// State-переходы запускаются внутри IO — var обновляется там же.
-// Конфигурация фиксирована в конструкторе.
-// -----------------------------------------------------------------------------
+// State-переходы запускаются внутри IO и var обновляется там же.
 class IOMachineInterpreter(cfg: VendingConfig) extends MachineAlgebra[IO]:
 
   private var state: MachineState = MachineState.initial
@@ -227,10 +202,6 @@ class IOMachineInterpreter(cfg: VendingConfig) extends MachineAlgebra[IO]:
   def getState: IO[MachineState] = IO(() => state)
 
 
-// -----------------------------------------------------------------------------
-// IOConsoleInterpreter — ConsoleAlgebra[IO]
-// Тонкая обёртка над стандартными IO-примитивами из Monads.scala.
-// -----------------------------------------------------------------------------
 class IOConsoleInterpreter extends ConsoleAlgebra[IO]:
   def putStrLn(s: String): IO[Unit] = IO.putStrLn(s)
   def putStr(s: String): IO[Unit]   = IO.putStr(s)

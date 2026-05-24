@@ -1,27 +1,4 @@
-// =============================================================================
-// Scenario.scala - интерактивный сценарий торгового автомата (Tagless Final)
-// =============================================================================
-// Файл содержит:
-//   1. Display        - чистые функции форматирования (без F, без алгебр)
-//   2. ScenarioStep   - элементарные шаги через ConsoleAlgebra[F]
-//   3. ScenarioLoop   - главный цикл через все четыре алгебры
-//   4. Main           - единственная точка входа, создаёт IO-интерпретаторы
-//
-// Ключевое отличие от ЛР1:
-//   Ни одного прямого вызова IO.putStrLn / IO.readLine.
-//   Весь ввод-вывод - через ConsoleAlgebra[F].
-//   Вся логика автомата - через MachineAlgebra[F], ConfigAlgebra[F], LogAlgebra[F].
-//   ScenarioStep и ScenarioLoop параметризованы по F[_]: Monad.
-//   Конкретный F = IO подставляется только в Main.
-// =============================================================================
 
-
-// -------------------------------------------
-// 1. DISPLAY - чистые функции форматирования
-// -----------------------------
-// Принимают данные, возвращают строки. Никакого F здесь нет -
-// это не эффекты, а просто трансформация данных в текст.
-// ScenarioStep вызывает эти функции и передаёт результат в console.putStrLn.
 
 object Display:
 
@@ -148,17 +125,14 @@ object ScenarioStep:
           yield n
     yield result
 
-  // getCurrentHour завёрнут в IO напрямую - системное время доступно
-  // только в IO-интерпретаторе. Вызывается только из Main.
   val getCurrentHour: IO[Int] =
     IO(() => java.time.LocalTime.now().getHour)
 
 
 // -----------------------------------------------------------------------------
-// 3. SCENARIOLOOP - главный цикл, параметризованный по F
-// -----------------------------------------------------------------------------
-// Принимает все четыре алгебры + конфигурацию.
-// Не знает про IO, State, Reader, Writer - только про F[_]: Monad.
+//  SCENARIO LOOP - главный цикл, параметризованный по F
+// Принимает все четыре алгебры и еще конфигурацию.
+// Не знает ничего вообще про IO, State, Reader, Writer - только про F[_]: Monad.
 
 object ScenarioLoop:
 
@@ -297,10 +271,11 @@ object ScenarioLoop:
     yield ()
 
 
-
-// 4. MAIN - наша единственная точка входа
 // -----------------------------------------------------------------------------
-// Здесь F будем фиксировать как IO, но можно 
+
+// MAIN
+
+// Здесь F будем фиксировать как IO, но можно
 // будет также сделать другие интерпретаторы и подставить (условный id для тестов)...
 // Создаем четыре IO-интерпретатора и передаём их в ScenarioLoop.loop.
 // unsafeRun вызывается ровно один раз.
@@ -315,10 +290,10 @@ object Main extends App:
 
   val program: IO[Unit] =
     for
-      _    <- ScenarioStep.showBanner(console)
+      _ <- ScenarioStep.showBanner(console)
       hour <- ScenarioStep.getCurrentHour
-      _    <- ScenarioStep.showMenu(cfg, hour, config, console)
-      _    <- ScenarioLoop.loop(machine, config, logger, console, cfg, hour)
+      _ <- ScenarioStep.showMenu(cfg, hour, config, console)
+      _ <- ScenarioLoop.loop(machine, config, logger, console, cfg, hour)
     yield ()
 
   program.unsafeRun()

@@ -158,11 +158,8 @@ object State:
 //
 // Ключевая идея: мы ОПИСЫВАЕМ что хотим сделать (напечатать строку,
 // прочитать ввод), но не делаем этого. Реальное исполнение - только в main,
-// через unsafeRun. Всt остальное - чистейшие функции.
+// через unsafeRun. Всее остальное - чистейшие функции.
 //
-// unsafe в названии - честное предупреждение: здесь происходит
-// реальный IO, и это небезопасно с точки зрения чистоты FP.
-// В реальных проектах этот вызов один - в точке входа программы.
 
 final case class IO[A](unsafeRun: () => A)
 
@@ -199,7 +196,6 @@ object IO:
     IO(() => scala.io.StdIn.readLine())
 
   // Запустить список IO-действий последовательно, собрать результаты.
-  // Аналог sequence - стандартной операции в функциональных библиотеках.
   def sequence[A](actions: List[IO[A]]): IO[List[A]] =
     actions.foldRight(summon[Monad[IO]].pure(List.empty[A])) { (action, acc) => // IO.pure(List.empty[A])
       // for-comprehension раскрывается в flatMap + map через extension methods
